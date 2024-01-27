@@ -9,7 +9,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .init();
 
     let mut swarm = libp2p::SwarmBuilder::with_new_identity()
-        .with_async_std()
+        .with_tokio()
         .with_tcp(
             libp2p::tcp::Config::default(),
             libp2p::tls::Config::new,
