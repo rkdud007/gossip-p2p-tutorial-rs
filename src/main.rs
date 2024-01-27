@@ -1,4 +1,4 @@
-use libp2p::ping;
+use libp2p::{ping, Multiaddr};
 use std::{error::Error, time::Duration};
 use tracing_subscriber::EnvFilter;
 
@@ -18,6 +18,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_behaviour(|_| ping::Behaviour::default())?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(30))) // Allows us to observe pings for 30 seconds.
         .build();
+
+    // Tell the swarm to listen on all interfaces and a random, OS-assigned
+    // port.
+    swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+
+    // Dial the peer identified by the multi-address given as the second
+    // command-line argument, if any.
+    if let Some(addr) = std::env::args().nth(1) {
+        let remote: Multiaddr = addr.parse()?;
+        swarm.dial(remote)?;
+        println!("Dialed {addr}")
+    }
 
     Ok(())
 }
