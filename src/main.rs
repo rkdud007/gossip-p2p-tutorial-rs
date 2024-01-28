@@ -2,9 +2,23 @@ use futures::StreamExt;
 use libp2p::gossipsub::{self, IdentTopic};
 use libp2p::multiaddr::Protocol;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
+
 use libp2p::{identity, Multiaddr, PeerId};
 use std::{error::Error, time::Duration};
 use tracing_subscriber::EnvFilter;
+
+struct Command {
+    topic: IdentTopic,
+    message: String,
+}
+
+async fn publish_message(gossipsub: &mut gossipsub::Behaviour, topic: IdentTopic, message: String) {
+    let result = gossipsub.publish(topic, message.as_bytes());
+    match result {
+        Ok(_) => println!("Message published: {}", message),
+        Err(e) => eprintln!("Error publishing message: {:?}", e),
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -22,8 +36,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     ];
     let p2p_bootnodes: Vec<Multiaddr> = peers
         .iter()
-        .map(|peer| peer.parse().unwrap())
-        .collect::<Vec<_>>();
+        .filter_map(|peer| match peer.parse() {
+            Ok(addr) => Some(addr),
+            Err(e) => {
+                eprintln!("Error parsing peer address: {:?}", e);
+                None
+            }
+        })
+        .collect();
     let local_peer_id = PeerId::from(p2p_local_keypair.public());
 
     //? 2. Gossip protocol behaviour config
@@ -39,8 +59,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // build a gossipsub network behaviour
     let mut gossipsub: gossipsub::Behaviour =
         gossipsub::Behaviour::new(message_authenticity, config).unwrap();
-    gossipsub.subscribe(&header_sub_topic)?;
-
+    if gossipsub.subscribe(&header_sub_topic).is_ok() {
+        println!("Subscribed to topic: {:?}", header_sub_topic);
+    } else {
+        eprintln!("Failed to subscribe to topic: {:?}", header_sub_topic);
+    }
     //? 3. Swarm behaviour config
     let behaviour = Behaviour { gossipsub };
     let mut swarm = libp2p::SwarmBuilder::with_existing_identity(p2p_local_keypair)
@@ -51,7 +74,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             libp2p::yamux::Config::default,
         )?
         .with_behaviour(|_| behaviour)?
-        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(30))) // Allows us to observe pings for 30 seconds.
         .build();
 
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
@@ -68,13 +90,53 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("Dialed {addr}")
     }
 
+    // Create a channel for sending commands to the main event loop
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Command>(32);
+
+    // Spawn a separate task for sending publish commands
+    tokio::spawn({
+        let tx = tx.clone();
+        async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                tx.send(Command {
+                    topic: header_sub_topic.clone(),
+                    message: "hello world".to_string(),
+                })
+                .await
+                .unwrap();
+            }
+        }
+    });
+
     loop {
-        match swarm.select_next_some().await {
-            SwarmEvent::NewListenAddr { address, .. } => println!("Listening on {address:?}"),
-            SwarmEvent::Behaviour(event) => match event {
-                BehaviourEvent::Gossipsub(event) => println!("Gossipsub event: {:?}", event),
-            },
-            _ => {}
+        tokio::select! {
+            Some(cmd) = rx.recv() => {
+                publish_message(&mut swarm.behaviour_mut().gossipsub, cmd.topic, cmd.message).await;
+            }
+            event = swarm.select_next_some() => {
+                match event {
+                    SwarmEvent::NewListenAddr { address, .. } => println!("Listening on {address:?}"),
+                    SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                        propagation_source,
+                        message_id,
+                        message,
+                    })) => {
+                        println!(
+                            "Received message from {:?}: {}",
+                            propagation_source,
+                            String::from_utf8_lossy(&message.data)
+                        );
+                    },
+                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                        println!("Connected to {:?}", peer_id);
+                    },
+                    SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                        println!("Disconnected from {:?}", peer_id);
+                    },
+                    _ => {}
+                }
+            }
         }
     }
 }
