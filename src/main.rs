@@ -1,9 +1,8 @@
 use futures::StreamExt;
 use libp2p::gossipsub::{self, IdentTopic};
-use libp2p::multiaddr::Protocol;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 
-use libp2p::{identity, Multiaddr, PeerId};
+use libp2p::{identity, Multiaddr};
 use std::{error::Error, time::Duration};
 use tracing_subscriber::EnvFilter;
 
@@ -20,6 +19,18 @@ async fn publish_message(gossipsub: &mut gossipsub::Behaviour, topic: IdentTopic
     }
 }
 
+pub(crate) fn gossipsub_ident_topic(network: &str, topic: &str) -> IdentTopic {
+    let network = network.trim_matches('/');
+    let topic = topic.trim_matches('/');
+    let s = format!("/{network}/{topic}");
+    IdentTopic::new(s)
+}
+
+#[derive(NetworkBehaviour)]
+struct Behaviour {
+    gossipsub: gossipsub::Behaviour,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt()
@@ -28,28 +39,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     //? 1. Basic config
     let p2p_local_keypair = identity::Keypair::generate_ed25519();
-    let peers: &[_] = &[
-        "/dns4/da-bridge-mocha-4.celestia-mocha.com/tcp/2121/p2p/12D3KooWCBAbQbJSpCpCGKzqz3rAN4ixYbc63K68zJg9aisuAajg",
-        "/dns4/da-bridge-mocha-4-2.celestia-mocha.com/tcp/2121/p2p/12D3KooWK6wJkScGQniymdWtBwBuU36n6BRXp9rCDDUD6P5gJr3G",
-        "/dns4/da-full-1-mocha-4.celestia-mocha.com/tcp/2121/p2p/12D3KooWCUHPLqQXZzpTx1x3TAsdn3vYmTNDhzg66yG8hqoxGGN8",
-        "/dns4/da-full-2-mocha-4.celestia-mocha.com/tcp/2121/p2p/12D3KooWR6SHsXPkkvhCRn6vp1RqSefgaT1X1nMNvrVjU2o3GoYy",
-    ];
-    let p2p_bootnodes: Vec<Multiaddr> = peers
-        .iter()
-        .filter_map(|peer| match peer.parse() {
-            Ok(addr) => Some(addr),
-            Err(e) => {
-                eprintln!("Error parsing peer address: {:?}", e);
-                None
-            }
-        })
-        .collect();
-    let local_peer_id = PeerId::from(p2p_local_keypair.public());
 
     //? 2. Gossip protocol behaviour config
     let header_sub_topic = gossipsub_ident_topic("mocha-4", "/header-sub/v0.0.1");
-    // Set the message authenticity - How we expect to publish messages
-    // Here we expect the publisher to sign the message with their key.
     let message_authenticity = gossipsub::MessageAuthenticity::Signed(p2p_local_keypair.clone());
     let config = gossipsub::ConfigBuilder::default()
         .validation_mode(gossipsub::ValidationMode::Strict)
@@ -77,12 +69,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .build();
 
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
-
-    // Tell Swarm to listen on all bootnodes
-    for addr in p2p_bootnodes {
-        swarm.dial(addr.clone())?;
-        println!("Dialed {addr}")
-    }
 
     if let Some(addr) = std::env::args().nth(1) {
         let remote: Multiaddr = addr.parse()?;
@@ -119,7 +105,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     SwarmEvent::NewListenAddr { address, .. } => println!("Listening on {address:?}"),
                     SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Message {
                         propagation_source,
-                        message_id,
+                        message_id:_,
                         message,
                     })) => {
                         println!(
@@ -138,30 +124,5 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
         }
-    }
-}
-
-pub(crate) fn gossipsub_ident_topic(network: &str, topic: &str) -> IdentTopic {
-    let network = network.trim_matches('/');
-    let topic = topic.trim_matches('/');
-    let s = format!("/{network}/{topic}");
-    IdentTopic::new(s)
-}
-
-#[derive(NetworkBehaviour)]
-struct Behaviour {
-    gossipsub: gossipsub::Behaviour,
-}
-
-pub(crate) trait MultiaddrExt {
-    fn peer_id(&self) -> Option<PeerId>;
-}
-
-impl MultiaddrExt for Multiaddr {
-    fn peer_id(&self) -> Option<PeerId> {
-        self.iter().find_map(|proto| match proto {
-            Protocol::P2p(peer_id) => Some(peer_id),
-            _ => None,
-        })
     }
 }
