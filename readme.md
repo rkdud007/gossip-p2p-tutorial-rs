@@ -1,4 +1,6 @@
-rust libp2p library ping-pong tutorial from : https://github.com/libp2p/rust-libp2p/blob/master/libp2p/src/tutorials/ping.rs
+# Goofy Gossip protocol p2p network
+
+Simple gossip protcol implementation with rust libp2p library inspired by ping-pong tutorial from : https://github.com/libp2p/rust-libp2p/blob/master/libp2p/src/tutorials/ping.rs
 
 ### Run
 
